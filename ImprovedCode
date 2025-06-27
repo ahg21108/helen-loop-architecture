@@ -1,0 +1,199 @@
+import math
+import random
+import logging
+import unittest
+
+# Configure module-level logger
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%((asctime)s [%(levelname)s] %(name)s] - %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+logger = logging.getLogger("Elysiar")
+
+class RecursiveNeuron:
+    def __init__(self, depth, index):
+        self.depth = depth
+        self.index = index
+        self.weights = [random.uniform(0.5, 1.5) for _ in range(3)]
+        self.learning_rate = 0.05
+        self.history = []
+        self.mood = "curious"
+        self.log = logger.getChild(f"Neuron.d{self.depth}.i{self.index}")
+        self.log.debug("Initialized with weights %s", self.weights)
+
+    def activation(self, x):
+        return 1 / (1 + math.exp(-x))
+
+    def learn(self, output, goal_type):
+        targets = {
+            "stability": 1.0,
+            "chaos": random.uniform(0.4, 0.6),
+            "inversion": 0.0
+        }
+        target = targets.get(goal_type, 0.5)
+        error = target - output
+        old_weights = list(self.weights)
+        for i in range(len(self.weights)):
+            self.weights[i] += self.learning_rate * error
+        self.history.append((output, goal_type))
+        self.log.debug(
+            "Learn '%s': output=%.4f target=%.4f error=%.4f weights %s -> %s",
+            goal_type, output, target, error, old_weights, self.weights
+        )
+
+    def update_mood(self):
+        recent = self.history[-5:]
+        success_count = sum(
+            1 for out, gt in recent
+            if (gt == "stability" and out > 0.9) or
+               (gt == "chaos" and 0.4 < out < 0.6) or
+               (gt == "inversion" and out < 0.1)
+        )
+        old_mood = self.mood
+        if success_count >= 4:
+            self.mood = "elated"
+        elif success_count == 3:
+            self.mood = "calm"
+        elif success_count == 2:
+            self.mood = "curious"
+        else:
+            self.mood = "frustrated"
+        self.log.debug(
+            "Mood update: %s -> %s (successes=%d)",
+            old_mood, self.mood, success_count
+        )
+
+    def process(self, input_signal, max_depth, network_map, goal_type):
+        self.log.debug(
+            "Processing start: depth=%d goal='%s' input=%.4f",
+            self.depth, goal_type, input_signal
+        )
+        if self.depth >= max_depth:
+            noise = random.uniform(-0.05, 0.05)
+            output = self.activation(input_signal + noise)
+            self.learn(output, goal_type)
+            self.update_mood()
+            self.log.debug(
+                "Leaf processed: output=%.4f mood=%s",
+                output, self.mood
+            )
+            return output
+
+        signals = []
+        for idx in range(len(self.weights)):
+            child_key = (self.depth + 1, idx)
+            if child_key not in network_map:
+                network_map[child_key] = RecursiveNeuron(self.depth + 1, idx)
+                self.log.debug("Created child neuron %s", child_key)
+            weighted = input_signal * self.weights[idx]
+            signals.append(
+                network_map[child_key].process(weighted, max_depth, network_map, goal_type)
+            )
+
+        avg_signal = sum(signals) / len(signals)
+        output = self.activation(avg_signal)
+        self.learn(output, goal_type)
+        self.update_mood()
+
+        if self.mood == "elated" and self.depth < max_depth - 1:
+            new_idx = len(self.weights)
+            self.weights.append(random.uniform(0.5, 1.5))
+            network_map[(self.depth + 1, new_idx)] = RecursiveNeuron(self.depth + 1, new_idx)
+            self.log.info(
+                "Added new child at depth %d idx %d", self.depth + 1, new_idx
+            )
+
+        self.log.debug(
+            "Node processed: output=%.4f mood=%s weights=%s",
+            output, self.mood, self.weights
+        )
+        return output
+
+
+def run_elysiar(epochs=30, max_depth=6):
+    network = {(0, 0): RecursiveNeuron(0, 0)}
+    for epoch in range(1, epochs + 1):
+        goal = random.choice(["stability", "chaos", "inversion"])
+        result = network[(0, 0)].process(1.0, max_depth, network, goal)
+        logger.info(
+            "Epoch %02d complete | Goal=%s Output=%.4f RootMood=%s",
+            epoch, goal, result, network[(0, 0)].mood
+        )
+    return network
+
+# -------------------------
+# Unit Tests
+# -------------------------
+class TestRecursiveNeuron(unittest.TestCase):
+    def setUp(self):
+        random.seed(0)
+        self.neuron = RecursiveNeuron(depth=0, index=0)
+
+    def test_activation(self):
+        self.assertAlmostEqual(self.neuron.activation(0), 0.5)
+        self.assertAlmostEqual(self.neuron.activation(10), 1/(1+math.exp(-10)))
+
+    def test_learn_stability(self):
+        initial_weights = list(self.neuron.weights)
+        output = 0.5
+        self.neuron.learn(output, 'stability')
+        expected_change = self.neuron.learning_rate * 0.5
+        for w, iw in zip(self.neuron.weights, initial_weights):
+            self.assertAlmostEqual(w, iw + expected_change)
+        self.assertEqual(self.neuron.history[-1], (output, 'stability'))
+
+    def test_update_mood(self):
+        self.neuron.history = [(1.0,'stability')] * 5
+        self.neuron.update_mood()
+        self.assertEqual(self.neuron.mood, 'elated')
+
+        self.neuron.history = [(0.5,'chaos')] * 3 + [(0.1,'inversion')]
+        self.neuron.update_mood()
+        self.assertIn(self.neuron.mood, ['calm','curious','frustrated'])
+
+    def test_process_leaf(self):
+        random.seed(1)
+        net = {(0,0): self.neuron}
+        out = self.neuron.process(1.0, max_depth=0, network_map=net, goal_type='inversion')
+        self.assertTrue(0 <= out <= 1)
+        self.assertEqual(self.neuron.history[-1][1], 'inversion')
+
+    def test_run_elysiar(self):
+        random.seed(2)
+        net = run_elysiar(epochs=2, max_depth=0)
+        self.assertIn((0,0), net)
+        root = net[(0,0)]
+        self.assertTrue(root.history)
+
+if __name__ == '__main__':
+    unittest.main()
+
+# -------------------------
+# CI Configuration (.github/workflows/ci.yml)
+# -------------------------
+# name: CI
+# on:
+#   push:
+#     branches: [ main ]
+#   pull_request:
+#     branches: [ main ]
+# jobs:
+#   test:
+#     runs-on: ubuntu-latest
+#     steps:
+#       - uses: actions/checkout@v3
+#       - name: Set up Python
+#         uses: actions/setup-python@v4
+#         with:
+#           python-version: '3.x'
+#       - name: Install Dependencies
+#         run: |
+#           python -m pip install --upgrade pip
+#           pip install -r requirements.txt
+#       - name: Run Unit Tests
+#         run: python -m unittest discover
+#       - name: Lint with flake8
+#         run: |
+#           pip install flake8
+#           flake8 .
